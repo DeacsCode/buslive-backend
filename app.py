@@ -17,10 +17,10 @@ CORS(app)
 BODS_URL = "https://data.bus-data.dft.gov.uk/api/v1/datafeed/"
 
 BBOX = {
-    "minLon": -1.25,
-    "minLat": 53.88,
-    "maxLon": -0.95,
-    "maxLat": 54.05,
+    "minLon": -2.65,
+    "minLat": 53.82,
+    "maxLon": -0.10,
+    "maxLat": 54.57,
 }
 
 SIRI_NS = "http://www.siri.org.uk/siri"
