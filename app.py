@@ -1,15 +1,23 @@
 """
-Deacon Bus Live — BODS Proxy
+Deacon Bus Live — BODS Proxy + Photo Storage
 Fetches real-time bus positions from the UK Bus Open Data Service.
-Set BODS_API_KEY as an environment variable in Railway.
+Stores bus photos in PostgreSQL.
+
+Environment variables required:
+  BODS_API_KEY  — from data.bus-data.dft.gov.uk
+  DATABASE_URL  — auto-set by Railway Postgres add-on
 """
 
 import os
 import re
+import base64
 import requests
 import xml.etree.ElementTree as ET
-from flask import Flask, jsonify
+from datetime import datetime
+from flask import Flask, jsonify, request
 from flask_cors import CORS
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 CORS(app)
@@ -25,6 +33,42 @@ BBOX = {
 
 SIRI_NS = "http://www.siri.org.uk/siri"
 
+# Max image size ~800KB base64 (~600KB raw) to keep DB usage sane
+MAX_IMAGE_BYTES = 800_000
+
+
+# ── Database ──────────────────────────────────────────────────────────────────
+
+def get_db():
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL not set")
+    return psycopg2.connect(db_url, cursor_factory=RealDictCursor)
+
+
+def init_db():
+    """Create photos table if it doesn't exist."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS photos (
+                id        SERIAL PRIMARY KEY,
+                vehicle   TEXT NOT NULL,
+                data      TEXT NOT NULL,
+                name      TEXT,
+                taken_at  TIMESTAMP DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_photos_vehicle ON photos(vehicle);
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"DB init error: {e}")
+
+
+# ── SIRI-VM parsing ───────────────────────────────────────────────────────────
 
 def g(va, tag):
     el = va.find(f".//{{{SIRI_NS}}}{tag}")
@@ -82,9 +126,18 @@ def parse_siri(xml_text):
     return buses
 
 
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.route("/api/health")
 def health():
-    return jsonify({"ok": True})
+    db_ok = False
+    try:
+        conn = get_db()
+        conn.close()
+        db_ok = True
+    except Exception:
+        pass
+    return jsonify({"ok": True, "db": db_ok})
 
 
 @app.route("/api/buses")
@@ -108,6 +161,88 @@ def buses():
     return jsonify({"ok": True, "buses": bus_list, "count": len(bus_list)})
 
 
+@app.route("/api/photos/<vehicle>", methods=["GET"])
+def get_photos(vehicle):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, data, name, taken_at FROM photos WHERE vehicle = %s ORDER BY taken_at ASC",
+            (vehicle,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        photos = [
+            {
+                "id":      row["id"],
+                "data":    row["data"],
+                "name":    row["name"],
+                "date":    row["taken_at"].isoformat() if row["taken_at"] else None,
+            }
+            for row in rows
+        ]
+        return jsonify({"ok": True, "photos": photos})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/photos/<vehicle>", methods=["POST"])
+def add_photo(vehicle):
+    body = request.get_json(silent=True) or {}
+    data = body.get("data", "")
+    name = body.get("name", "photo")
+
+    if not data:
+        return jsonify({"ok": False, "error": "No image data"}), 400
+    if len(data) > MAX_IMAGE_BYTES:
+        return jsonify({"ok": False, "error": "Image too large (max ~600KB)"}), 413
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO photos (vehicle, data, name) VALUES (%s, %s, %s) RETURNING id, taken_at",
+            (vehicle, data, name)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({
+            "ok":   True,
+            "id":   row["id"],
+            "date": row["taken_at"].isoformat(),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/photos/<vehicle>/<int:photo_id>", methods=["DELETE"])
+def delete_photo(vehicle, photo_id):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM photos WHERE id = %s AND vehicle = %s",
+            (photo_id, vehicle)
+        )
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        if deleted == 0:
+            return jsonify({"ok": False, "error": "Photo not found"}), 404
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── Startup ───────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
+    init_db()
     port = int(os.environ.get("PORT", 5111))
     app.run(host="0.0.0.0", port=port)
+
+init_db()
