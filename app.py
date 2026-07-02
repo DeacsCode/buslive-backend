@@ -152,7 +152,7 @@ def buses():
     }
 
     try:
-        resp = requests.get(BODS_URL, params=params, timeout=15)
+        resp = requests.get(BODS_URL, params=params, timeout=20)
         resp.raise_for_status()
     except requests.RequestException as e:
         return jsonify({"ok": False, "error": str(e)}), 502
