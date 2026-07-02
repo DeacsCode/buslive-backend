@@ -33,8 +33,8 @@ BBOX = {
 
 SIRI_NS = "http://www.siri.org.uk/siri"
 
-# Max image size ~4MB
-MAX_IMAGE_BYTES = 4_000_000
+# Max image size ~6MB
+MAX_IMAGE_BYTES = 6_000_000
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ def add_photo(vehicle):
     if not data:
         return jsonify({"ok": False, "error": "No image data"}), 400
     if len(data) > MAX_IMAGE_BYTES:
-        return jsonify({"ok": False, "error": "Image too large (max ~3MB)"}), 413
+        return jsonify({"ok": False, "error": "Image too large (max ~5MB)"}), 413
 
     try:
         conn = get_db()
